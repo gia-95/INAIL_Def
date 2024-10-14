@@ -173,7 +173,6 @@ def saveImage(image, file_name, dir_path):
     cv2.imwrite(file_path, image)
     print(f"-> Salvataggio '{file_path}' effettuato!")
 
-
 #### Crop TUTA  ####
 
 def crop_tuta_from_image(detection_result, image, return_coord=False):
@@ -184,40 +183,38 @@ def crop_tuta_from_image(detection_result, image, return_coord=False):
     # Height and width image
     height = image.shape[0]
     width = image.shape[1]
+    
+    ################################### Logica crop ###################################
+    ### x : spalle                                                                    #
+    ### y : alto -> 50 px sopra le spalle                                             #
+    ###     basso -> 200 px sotto l'anca (più o meno sotto il cavallo)                #
+    ###################################################################################
 
     if not checkCorrectPositionTuta(pose_landmarks, height, width):
-        return None  # noqa: E701
+        return None, None
+    
+    try :
+        coord_spallaSx = pose_landmarks[11]
+        coord_spallaDx = pose_landmarks[12]
+        coord_ancaSx = pose_landmarks[23]
+        coord_ancaDx = pose_landmarks[24]
+        
+        x_min = max(0, coord_spallaDx.x * width)
+        x_max = min(width, coord_spallaSx.x * width)
+        y_min = max(0, min((coord_spallaSx.y * height, coord_spallaDx.y * height)) - 50)
+        y_max = min(height, max(coord_ancaSx.y * height, coord_ancaDx.y * height) + 200)
 
-    coord_spallaSx = pose_landmarks[11]
-    coord_spallaDx = pose_landmarks[12]
-    coord_ancaSx = pose_landmarks[23]
-    coord_ancaDx = pose_landmarks[24]
-    coord_ginocchioDx = pose_landmarks[26]
-
-    try:
-        dist_anca_ginocchio = coord_ginocchioDx.y * width - coord_ancaDx.y * width
-        y_basso = round(
-            max(coord_ancaSx.y * height, coord_ancaDx.y * height)
-            + (dist_anca_ginocchio / 2)
-        )
-        y_alto = round(min((coord_spallaSx.y * height, coord_spallaDx.y * height)))
-        x_min = round(coord_spallaDx.x * width)
-        x_max = round(coord_spallaSx.x * width)
-
-        if y_alto <= y_basso and x_min <= x_max:
-            crop = image[y_alto:y_basso, x_min:x_max]
-            if return_coord : return crop, (y_alto, y_basso, x_min, x_max)
-            else : return crop
+        if  x_min <= x_max: # Solo come controllo che non sto di spalle
+            crop = image[round(y_min):round(y_max), round(x_min):round(x_max)]
+            return crop, (round(y_min), round(y_max), round(x_min), round(x_max))
         else:
-            if return_coord : return None, None
-            else : return None
+            return None, None
     except:  
-        if return_coord : return None, None
-        else : return None
+        return None, None
 
 def checkCorrectPositionTuta(pose_landmarks, w_img, h_img):
-    coord_manoSx = pose_landmarks[19]
-    coord_manoDx = pose_landmarks[20]
+    coord_manoSx = pose_landmarks[17]
+    coord_manoDx = pose_landmarks[18]
     coord_spallaSx = pose_landmarks[11]
     coord_spallaDx = pose_landmarks[12]
     coord_ancaSx = pose_landmarks[23]
@@ -225,126 +222,105 @@ def checkCorrectPositionTuta(pose_landmarks, w_img, h_img):
 
     if (
         # Le mani devono stare all'esterno delle anche
-        (coord_manoSx.x * w_img > coord_ancaSx.x * w_img) and (coord_manoDx.x * w_img < coord_ancaDx.x * w_img)
-        and
+        ((coord_manoDx.x * w_img > coord_ancaDx.x * w_img) and (coord_manoDx.y*h_img > coord_spallaDx.y*h_img) and (coord_manoDx.y*h_img < coord_ancaDx.y*h_img))
+        or
+        ((coord_manoSx.x * w_img < coord_ancaSx.x * w_img) and (coord_manoSx.y*h_img > coord_spallaSx.y*h_img) and (coord_manoSx.y*h_img < coord_ancaSx.y*h_img))
+        or
         # Non sto mezzo piegato a raccogliere qualcosa (le 'y' delle spalle non sono simili)
-        abs(coord_spallaDx.y * h_img - coord_spallaSx.y * h_img) <= 50
-        and
+        abs(coord_spallaDx.y * h_img - coord_spallaSx.y * h_img) >= 70
+        or
         # Non stò mezzo girato da una parte (le 'z' delle mani devono essere simili)
-        abs(pose_landmarks[20].z - pose_landmarks[19].z) <= 0.4
+        abs(coord_spallaDx.z - coord_spallaSx.z) > 0.5
     ):
-        return True
-    else:
         return False
+    else:
+        return True
 
 #### Crop TESTA ####
 
-def crop_testa_from_image(detection_result, image, return_coord=False):
+def crop_testa_from_image(detection_result, image):
+    
+    ################################### Logica crop ###################################
+    ### x : Cambia a seconda se il soggetto sta di faccia, girato a dx o girato a sx  #
+    ### y : alto -> naso + 150px                                                      #
+    ###     basso -> spalle + 100 px                                                  #
+    ###################################################################################
+    
     # Prendo la lista dei punti del corpo rilevati ([0] perchè è la prima/unica persona)
     pose_landmarks_list = detection_result.pose_landmarks
     pose_landmarks = pose_landmarks_list[0]
-
+    
     # Height and width image
     height = image.shape[0]
     width = image.shape[1]
     
     if not checkCorrectPositionTesta(pose_landmarks, height, width):
-        if (return_coord) : return None, None
-        else : return None
+        return None, None
 
-    # Coordinate punti del corpo
-    coord_spallaSx = pose_landmarks[11]
-    coord_spallaDx = pose_landmarks[12]
-    coord_naso = pose_landmarks[0]
-    
-    ### La logica del crop è:
-    ### altezza crop -> 'y_alto' prendo il naso meno (distanza tra spalle)/1.3;
-    ###                 'y_basso' prendo il naso più (distanza tra le spalle)/1.3
-    ### larghezza crop -> (per mantenere rapporto h/w fisso) dal naso sx/dx +/- (altezza crop / 2)
-
-    ### ALTEZZA CROP (to-do: migliorare in base al fatto che guardo su o giù)
-    distanza_spalle = abs(coord_spallaDx.x*width - coord_spallaSx.x*width) /1.3
-    y_alto = max(0, (coord_naso.y*height) - distanza_spalle )
-    y_basso = coord_naso.y*height + distanza_spalle
-    
-    ### LARGHEZZA CROP
-    meta_height = (y_basso - y_alto)/2
-    x_min = coord_naso.x*width - meta_height if coord_naso.x*width - meta_height > 0 else 0 
-    x_max = coord_naso.x*width + meta_height if coord_naso.x*width + meta_height < width else width 
-    
-
-    ### Se il crop viene troppo stretto non lo prendo (larghezza< 100px)
-    if ((round(x_max) - round(x_min)) < 200 ) : 
-        if (return_coord) : return None, None
-        else : return None
-    
     try :
-        if (y_alto <= y_basso and x_min <= x_max) :
-            crop  = image[round(y_alto) : round(y_basso) , round(x_min) : round(x_max)]
-            if (return_coord) :
-                return crop, (round(y_alto) , round(y_basso) , round(x_min) , round(x_max))
-            else :
-                return crop
-        else :
-            if (return_coord) : return None, None
-            else : return None
-    except : 
-        if (return_coord) : return None, None 
-        else : return None
+        # Coordinate punti del corpo
+        coord_spallaSx = pose_landmarks[11]
+        coord_spallaDx = pose_landmarks[12]
+        coord_naso = pose_landmarks[0]
 
+        # Girato verso destra
+        if (coord_spallaDx.z - coord_spallaSx.z > 0.5) :
+            x_min = max(0, coord_naso.x*width - 100)
+            x_max = min(width, coord_naso.x*width + 200)
+        
+        # Girato verso sinistra
+        elif (coord_spallaDx.z - coord_spallaSx.z < -0.5) :
+            x_min = max(0, coord_naso.x*width - 200)
+            x_max = min(width, coord_naso.x*width + 100)
+        
+        # Di faccia
+        else :
+            x_min = max(0, coord_naso.x*width - 150)
+            x_max = min(width, coord_naso.x*width + 150)
+        
+        
+        y_min = max(0, coord_naso.y*height - 250)
+        y_max = min(height, max(coord_spallaSx.y*height, coord_spallaDx.y*height))
+        
+        crop = image[round(y_min) : round(y_max), round(x_min) : round(x_max)]
+    except :
+        return None, None
+    
+    return crop , (round(y_min) , round(y_max), round(x_min), round(x_max))
+        
 def checkCorrectPositionTesta(pose_landmarks, w_img, h_img):
     coord_spallaSx = pose_landmarks[11]
     coord_spallaDx = pose_landmarks[12]
     coord_manoSx = pose_landmarks[17]
     coord_manoDx = pose_landmarks[18]
-    coord_naso = pose_landmarks[0]
     coord_boccaSx = pose_landmarks[10]
     coord_boccaDx = pose_landmarks[9]
+    coord_occhioSx = pose_landmarks[2]
+    coord_occhioDx = pose_landmarks[5]
+    coord_naso = pose_landmarks[0]
+    
+    # Presence
+    if (coord_boccaSx.presence < 0.9 or
+        coord_boccaDx.presence < 0.9 or
+        coord_occhioSx.presence < 0.9 or
+        coord_occhioDx.presence < 0.9 or
+        coord_naso.presence < 0.9
+        ):
+            return False
     
     # Se la bocca sta sotto le spalle (strano) -> non corretto
     if ((coord_boccaDx.y*h_img > coord_spallaSx.y*h_img) or (coord_boccaDx.y*h_img > coord_spallaDx.y*h_img) 
         or (coord_boccaSx.y*h_img > coord_spallaSx.y*h_img) or (coord_boccaSx.y*h_img > coord_spallaDx.y*h_img)):
         return False
-    
-        
-    ### Caso girato DI FACCIA
-    if (coord_spallaDx.x * w_img < coord_spallaSx.x * w_img) :
-                
-        if (
-            # Testa fuori dalle spalle (non corretto)
-            (coord_naso.x*w_img < coord_spallaDx.x*w_img) or (coord_naso.x*w_img > coord_spallaSx.x*w_img)
-            or
-            # Mano DX all'interno della faccia                       ...e più alta delle spalle
-            (coord_manoDx.x * w_img >= coord_spallaDx.x * w_img) and (coord_manoDx.y * h_img <= coord_spallaDx.y * h_img)
-            or
-            # oppure mano SX all'interno della faccia                ...e più alta delle spalle
-            (coord_manoSx.x * w_img <= coord_spallaSx.x * w_img) and (coord_manoSx.y * h_img <= coord_spallaSx.y * h_img)
-            or  
-            # Non stò mezzo girato da una parte (le 'z' delle mani devono essere simili)
-            abs(pose_landmarks[12].z - pose_landmarks[11].z) >= 0.4
-        ):
+         
+    if (
+        # Mano DX all'interno della faccia                       ...e più alta delle spalle
+        (coord_manoDx.x * w_img >= coord_spallaDx.x * w_img) and (coord_manoDx.y * h_img <= coord_spallaDx.y * h_img)
+        or
+        # oppure mano SX all'interno della faccia                ...e più alta delle spalle
+        (coord_manoSx.x * w_img <= coord_spallaSx.x * w_img) and (coord_manoSx.y * h_img <= coord_spallaSx.y * h_img)):
             return False
-        else:
-            return True
-        
-
-    ### Girato DI SPALLE
     else:
-        if (
-            # Testa fuori dalle spalle (non corretto)
-            (coord_naso.x*w_img > coord_spallaDx.x*w_img) or (coord_naso.x*w_img < coord_spallaSx.x*w_img)
-            or
-            # Mano DX all'interno della faccia                        ...e più alta delle spalle
-            (coord_manoDx.x * w_img <= coord_spallaDx.x * w_img) and (coord_manoDx.y * h_img <= coord_spallaDx.y * h_img)
-            or
-            # oppure mano SX all'interno della faccia                ...e più alta delle spalle
-            (coord_manoSx.x * w_img >= coord_spallaSx.x * w_img) and (coord_manoSx.y * h_img <= coord_spallaSx.y * h_img) 
-            or  
-            # Non stò mezzo girato da una parte (le 'z' delle mani devono essere simili)
-            abs(pose_landmarks[12].z - pose_landmarks[11].z) >= 0.4
-        ):
-            return False
-        else:
             return True
 
 ### Crop MANO DX ###
@@ -359,75 +335,83 @@ def crop_mano_dx_from_image(detection_result, image, return_coord=False):
     width = image.shape[1]
     
     if not checkCorrectPositionManoDx(pose_landmarks, height, width):
-        if (return_coord) : return None, None
-        else : return None
+        return None, None
     
-    # Coordinate punti del corpo
-    coord_manoDx_bassa = pose_landmarks[18]
-    coord_manoDx_alta = pose_landmarks[20]
-    coord_polsoDx = pose_landmarks[16]
-    coord_gomitoDx = pose_landmarks[14]
-    
-    ### In base alla posizione delle mani faccio il crop (in giù, in sù, ecc.)
-    
-    # (mano protesa in avanti NO!)
-    if (
-        (abs(coord_gomitoDx.x*width - coord_polsoDx.x*width) < 50) and
-        (abs(coord_gomitoDx.y*height - coord_polsoDx.y*height) < 50)
-        ) :
-            if (return_coord) : return None, None
-            else : return None
-    
-    # Mano in giù (sotto il gomito)
-    if ((coord_manoDx_bassa.y*height - coord_gomitoDx.y*height) > 100) :
-        x_min = max(0, coord_manoDx_bassa.x*width - 150)
-        x_max = min(width, coord_manoDx_bassa.x*width + 150)
-        y_min = max(0, coord_gomitoDx.y*height)
-        y_max = min(height, coord_manoDx_bassa.y*height + 150)
+    try :
         
-    # Mano in sù (sopra il gomito)
-    elif ((coord_manoDx_bassa.y*height - coord_gomitoDx.y*height) < -100) :
-        x_min = max(0, coord_manoDx_bassa.x*width - 150)
-        x_max = min(width, coord_manoDx_bassa.x*width + 150)
-        y_min = max(0, coord_manoDx_bassa.y*height - 150)
-        y_max = min(height, coord_gomitoDx.y*height)
+        # Coordinate punti del corpo
+        coord_manoDx_bassa = pose_landmarks[18]
+        coord_manoDx_alta = pose_landmarks[20]
+        coord_gomitoDx = pose_landmarks[14]
         
-    # Mano altezza del gomito
-    else : 
-        # braccio interno al corpo
-        if (coord_manoDx_bassa.x*width > coord_gomitoDx.x*width) :
-            x_min = max(0, coord_gomitoDx.x*width)
-            x_max = min(width, coord_manoDx_bassa.x*width + 150)
-            y_min = max(0, coord_manoDx_alta.y*height - 150)
-            y_max = min(height, coord_manoDx_bassa.y*height + 120)
-            
-        # Braccio esterno al corpo
-        else :
+        ### In base alla posizione delle mani faccio il crop (in giù, in sù, ecc.)
+        
+        # Mano in giù (sotto il gomito)
+        if ((coord_manoDx_bassa.y*height - coord_gomitoDx.y*height) > 100) :
             x_min = max(0, coord_manoDx_bassa.x*width - 150)
-            x_max = min(width, coord_gomitoDx.x*width)
-            y_min = max(0, coord_manoDx_alta.y*height - 100)
-            y_max = min(height, coord_manoDx_bassa.y*height + 120)
+            x_max = min(width, coord_manoDx_bassa.x*width + 150)
+            y_min = max(0, coord_gomitoDx.y*height)
+            y_max = min(height, coord_manoDx_bassa.y*height + 150)
             
-    crop_manoDx = image[round(y_min) : round(y_max), round(x_min) :round(x_max)]
+        # Mano in sù (sopra il gomito)
+        elif ((coord_manoDx_bassa.y*height - coord_gomitoDx.y*height) < -100) :
+            x_min = max(0, coord_manoDx_bassa.x*width - 150)
+            x_max = min(width, coord_manoDx_bassa.x*width + 150)
+            y_min = max(0, coord_manoDx_bassa.y*height - 150)
+            y_max = min(height, coord_gomitoDx.y*height)
+            
+        # Mano altezza del gomito
+        else : 
+            # braccio interno al corpo
+            if (coord_manoDx_bassa.x*width > coord_gomitoDx.x*width) :
+                x_min = max(0, coord_gomitoDx.x*width)
+                x_max = min(width, coord_manoDx_bassa.x*width + 150)
+                y_min = max(0, coord_manoDx_alta.y*height - 150)
+                y_max = min(height, coord_manoDx_bassa.y*height + 120)
+                
+            # Braccio esterno al corpo
+            else :
+                x_min = max(0, coord_manoDx_bassa.x*width - 150)
+                x_max = min(width, coord_gomitoDx.x*width)
+                y_min = max(0, coord_manoDx_alta.y*height - 100)
+                y_max = min(height, coord_manoDx_bassa.y*height + 120)
+                
+        crop_manoDx = image[round(y_min) : round(y_max), round(x_min) :round(x_max)]
+        
+        return crop_manoDx, (round(y_min) , round(y_max), round(x_min) , round(x_max))
     
-    if return_coord : return crop_manoDx, (round(y_min), round(y_max), round(x_min), round(x_max))
-    else : return crop_manoDx
+    except :
+        
+        return None, None
 
 def checkCorrectPositionManoDx(pose_landmarks, height, width) :
     coord_manoSx = pose_landmarks[17]
     coord_manoDx = pose_landmarks[18]
     coord_spallaSx = pose_landmarks[11]
     coord_spallaDx = pose_landmarks[12]
+    coord_polsoDx = pose_landmarks[16]
+    coord_gomitoDx = pose_landmarks[14]
     
+    # Presence
+    if (coord_manoDx.presence < 0.9 or
+        coord_polsoDx.presence < 0.9 ):
+            return False
+    
+    # Mano protesa in avanti NO
+    if ((abs(coord_gomitoDx.x*width - coord_polsoDx.x*width) < 50) and (abs(coord_gomitoDx.y*height - coord_polsoDx.y*height) < 50)) :
+        return False
+    
+    # Girato verso sinistra (la mano destra non si vede) NO
     if ((coord_spallaSx.z - coord_spallaDx.z) < -0.5) :
         return False
-    elif ((coord_spallaSx.z - coord_spallaDx.z) > 0.5) :
-        return True
-    else :
-        if (
-            (abs(coord_manoDx.x*width - coord_manoSx.x*width) < 200) and
-            (abs(coord_manoDx.y*height - coord_manoSx.y*height) < 150)) :
-                return False
+
+    # Se di fronte (primi due if), mani sovrapposte (secondi due if) NO
+    if (
+        abs(coord_spallaDx.z - coord_spallaSx.z) > -0.5 and
+        abs(coord_spallaDx.z - coord_spallaSx.z) < 0.5 and
+        (abs(coord_manoDx.x*width - coord_manoSx.x*width) < 200) and
+        (abs(coord_manoDx.y*height - coord_manoSx.y*height) < 150)) :
+            return False
 
     return True
 
@@ -443,76 +427,82 @@ def crop_mano_sx_from_image(detection_result, image, return_coord=False):
     width = image.shape[1]
     
     if not checkCorrectPositionManoSx(pose_landmarks, height, width):
-        if (return_coord) : return None, None
-        else : return None
+        return None, None
     
     # Coordinate punti del corpo
     coord_manoSx_bassa = pose_landmarks[17]
     coord_manoSx_alta = pose_landmarks[19]
-    coord_polsoSx = pose_landmarks[15]
     coord_gomitoSx = pose_landmarks[13]
     
-    ### In base alla posizione delle mani faccio il crop (in giù, in sù, ecc.)
-    
-    # (mano protesa in avanti NO!)
-    if (
-        (abs(coord_gomitoSx.x*width - coord_polsoSx.x*width) < 50) and
-        (abs(coord_gomitoSx.y*height - coord_polsoSx.y*height) < 50)
-        ) :
-            if (return_coord) : return None, None
-            else : return None
-    
-    # Mano in giù (sotto il gomito)
-    if ((coord_manoSx_bassa.y*height - coord_gomitoSx.y*height) > 100) :
-        x_min = max(0, coord_manoSx_bassa.x*width - 150)
-        x_max = min(width, coord_manoSx_bassa.x*width + 150)
-        y_min = max(0, coord_gomitoSx.y*height)
-        y_max = min(height, coord_manoSx_bassa.y*height + 150)
-        
-    # Mano in sù (sopra il gomito)
-    elif ((coord_manoSx_bassa.y*height - coord_gomitoSx.y*height) < -100) :
-        x_min = max(0, coord_manoSx_bassa.x*width - 150)
-        x_max = min(width, coord_manoSx_bassa.x*width + 150)
-        y_min = max(0, coord_manoSx_bassa.y*height - 150)
-        y_max = min(height, coord_gomitoSx.y*height)
-        
-    # Mano altezza del gomito
-    else : 
-        # braccio interno al corpo
-        if (coord_manoSx_bassa.x*width < coord_gomitoSx.x*width) :
+    try :
+
+        # Mano in giù (sotto il gomito)
+        if ((coord_manoSx_bassa.y*height - coord_gomitoSx.y*height) > 100) :
             x_min = max(0, coord_manoSx_bassa.x*width - 150)
-            x_max = min(width, coord_gomitoSx.x*width)
-            y_min = max(0, coord_manoSx_alta.y*height - 150)
-            y_max = min(height, coord_manoSx_bassa.y*height + 120)
-            
-        # Braccio esterno al corpo
-        else :
-            x_min = max(0, coord_gomitoSx.x*width)
             x_max = min(width, coord_manoSx_bassa.x*width + 150)
-            y_min = max(0, coord_manoSx_alta.y*height - 100)
-            y_max = min(height, coord_manoSx_bassa.y*height + 120)
+            y_min = max(0, coord_gomitoSx.y*height)
+            y_max = min(height, coord_manoSx_bassa.y*height + 150)
             
-    crop_manoDx = image[round(y_min) : round(y_max), round(x_min) :round(x_max)]
+        # Mano in sù (sopra il gomito)
+        elif ((coord_manoSx_bassa.y*height - coord_gomitoSx.y*height) < -100) :
+            x_min = max(0, coord_manoSx_bassa.x*width - 150)
+            x_max = min(width, coord_manoSx_bassa.x*width + 150)
+            y_min = max(0, coord_manoSx_bassa.y*height - 150)
+            y_max = min(height, coord_gomitoSx.y*height)
+            
+        # Mano altezza del gomito
+        else : 
+            # braccio interno al corpo
+            if (coord_manoSx_bassa.x*width < coord_gomitoSx.x*width) :
+                x_min = max(0, coord_manoSx_bassa.x*width - 150)
+                x_max = min(width, coord_gomitoSx.x*width)
+                y_min = max(0, coord_manoSx_alta.y*height - 150)
+                y_max = min(height, coord_manoSx_bassa.y*height + 120)
+                
+            # Braccio esterno al corpo
+            else :
+                x_min = max(0, coord_gomitoSx.x*width)
+                x_max = min(width, coord_manoSx_bassa.x*width + 150)
+                y_min = max(0, coord_manoSx_alta.y*height - 100)
+                y_max = min(height, coord_manoSx_bassa.y*height + 120)
+                
+        crop_manoDx = image[round(y_min) : round(y_max), round(x_min) :round(x_max)]
+        
+        return crop_manoDx, (round(y_min) , round(y_max), round(x_min) , round(x_max))
     
-    if return_coord : return crop_manoDx, (round(y_min), round(y_max), round(x_min), round(x_max))
-    else : return crop_manoDx
+    except :
+        
+        return None, None    
 
 def checkCorrectPositionManoSx(pose_landmarks, height, width) :
     coord_manoSx = pose_landmarks[17]
     coord_manoDx = pose_landmarks[18]
     coord_spallaSx = pose_landmarks[11]
     coord_spallaDx = pose_landmarks[12]
+    coord_polsoSx = pose_landmarks[15]
+    coord_gomitoSx = pose_landmarks[13]
     
+    # Presence
+    if (coord_manoSx.presence < 0.9 or
+        coord_polsoSx.presence < 0.9 ):
+            return False
+    
+    # Mano protesa in avanti NO
+    if ((abs(coord_gomitoSx.x*width - coord_polsoSx.x*width) < 50) and (abs(coord_gomitoSx.y*height - coord_polsoSx.y*height) < 50)) :
+        return False
+    
+     # Girato verso sinistra (la mano destra non si vede) NO
     if ((coord_spallaSx.z - coord_spallaDx.z) > 0.5) :
         return False
-    elif ((coord_spallaSx.z - coord_spallaDx.z) < -0.5) :
-        return True
-    else :
-        if (
-            (abs(coord_manoDx.x*width - coord_manoSx.x*width) < 200) and
-            (abs(coord_manoDx.y*height - coord_manoSx.y*height) < 150)) :
-                return False
     
+    # Se di fronte (primi due if), mani sovrapposte (secondi due if) NO
+    if (
+        abs(coord_spallaDx.z - coord_spallaSx.z) > -0.5 and
+        abs(coord_spallaDx.z - coord_spallaSx.z) < 0.5 and
+        (abs(coord_manoDx.x*width - coord_manoSx.x*width) < 200) and
+        (abs(coord_manoDx.y*height - coord_manoSx.y*height) < 150)) :
+            return False
+
     return True
 
 ### Crop STIVALI ###
@@ -527,28 +517,29 @@ def crop_stivali_sx_from_image(detection_result, image, return_coord=False) :
     height = image.shape[0]
     width = image.shape[1]
     
-    if (checkCorrectPositionStivaleSx(pose_landmarks, height, width)):
+    if (not checkCorrectPositionStivaleSx(pose_landmarks, height, width)):
+        return None, None
+    
+    try:
         
         # Coordinate punti dei piedi SX
         caviglia_piede_SX = pose_landmarks[27]
         tallone_piede_SX = pose_landmarks[29]
         punta_piede_SX = pose_landmarks[31]
         
-        x_min_SX = min(tallone_piede_SX.x*width, punta_piede_SX.x*width)
-        x_max_SX = max(tallone_piede_SX.x*width, punta_piede_SX.x*width)
-        y_min_SX = caviglia_piede_SX.y*height
-        y_max_SX = max(punta_piede_SX.y*height, tallone_piede_SX.y*height) + 50
+        x_min_SX = max(0, min(tallone_piede_SX.x*width, punta_piede_SX.x*width) - 60)
+        x_max_SX = min(width, max(tallone_piede_SX.x*width, punta_piede_SX.x*width) + 60)
+        y_min_SX = max(0, caviglia_piede_SX.y*height - 100)
+        y_max_SX = min(height, max(punta_piede_SX.y*height, tallone_piede_SX.y*height) + 100)
         
-        crop_stivale_SX = image[round(max(0, y_min_SX-100)) : round(min(y_max_SX+50, height)) , round(max(0, x_min_SX-60)) : round(min(x_max_SX+60, width))]
+        crop_stivale_SX = image[round(y_min_SX) : round(y_max_SX) , round(x_min_SX) : round(x_max_SX)]
         
-        if (return_coord) :
-            return crop_stivale_SX, (round(max(0, y_min_SX-100)), round(min(y_max_SX+50, height)), round(max(0, x_min_SX-60)), round(min(x_max_SX+60, width)))
-        else :
-            return crop_stivale_SX        
+        return crop_stivale_SX, (round(y_min_SX) , round(y_max_SX) , round(x_min_SX) , round(x_max_SX))
     
-    if return_coord : return None, None
-    else : return None
-
+    except :
+        
+        return None, None
+        
 def checkCorrectPositionStivaleSx(pose_landmarks, height, width) :
     #### Logica: 0) No girato di spalle!
     ###          1) il piede deve essere presente nell'immagine (presence)
@@ -605,29 +596,28 @@ def crop_stivali_dx_from_image(detection_result, image, return_coord=False) :
     height = image.shape[0]
     width = image.shape[1]
     
-
-    if (checkCorrectPositionStivaleDx(pose_landmarks, height, width)):
-        
+    if (not checkCorrectPositionStivaleDx(pose_landmarks, height, width)):
+        return None, None
+       
+    try :
+         
         # Coordinate punti dei piedi SX
         caviglia_piede_DX = pose_landmarks[28]
         tallone_piede_DX = pose_landmarks[30]
         punta_piede_DX = pose_landmarks[32]
         
-        x_min_DX = min(tallone_piede_DX.x*width, punta_piede_DX.x*width)
-        x_max_DX = max(tallone_piede_DX.x*width, punta_piede_DX.x*width)
-        y_min_DX = caviglia_piede_DX.y*height
-        # y_max_DX = max(punta_piede_DX.y*height, tallone_piede_DX.y*height) + 50
-        y_max_DX = punta_piede_DX.y*height + 50
+        x_min_DX = max(0, min(tallone_piede_DX.x*width, punta_piede_DX.x*width) - 60)
+        x_max_DX = min(width, max(tallone_piede_DX.x*width, punta_piede_DX.x*width) + 60)
+        y_min_DX = max(0, caviglia_piede_DX.y*height - 100)
+        y_max_DX = min(height, punta_piede_DX.y*height + 100)
         
-        crop_stivale_DX = image[round(max(0, y_min_DX-100)) : round(min(y_max_DX+50, height)) , round(max(0, x_min_DX-60)) : round(min(x_max_DX+60, width))]
-
-        if (return_coord) :
-            return crop_stivale_DX, (round(max(0, y_min_DX-100)), round(min(y_max_DX+50, height)), round(max(0, x_min_DX-60)), round(min(x_max_DX+60, width)))       
-        else :
-            return crop_stivale_DX    
+        crop_stivale_DX = image[round(y_min_DX) : round(y_max_DX) , round(x_min_DX) : round(x_max_DX)]
+        
+        return crop_stivale_DX, (round(y_min_DX) , round(y_max_DX) , round(x_min_DX) , round(x_max_DX))
     
-    if return_coord : return None, None
-    else : return None
+    except :
+        
+        return None, None
     
 def checkCorrectPositionStivaleDx(pose_landmarks, height, width) :
     #### Logica: 0) No girato di spalle!
