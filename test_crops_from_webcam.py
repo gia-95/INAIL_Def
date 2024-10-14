@@ -1,5 +1,4 @@
 import cv2
-import utils_webcam
 import utils
 
 
@@ -33,7 +32,7 @@ while True:
     frame_height = frame.shape[0]
 
     ### Detect Mediapipe
-    annotated_image, detection_result = utils_webcam.get_lanmarked_image(frame)
+    annotated_image, detection_result = utils.get_lanmarked_image(frame)
   
     # SHOW MEDIAPIPE
     annotated_image = cv2.resize(annotated_image, (WIDTH_CORPO, round((WIDTH_CORPO*annotated_image.shape[0])/annotated_image.shape[1])))

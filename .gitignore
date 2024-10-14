@@ -1,0 +1,17 @@
+modelli_inceptionV3_trained/
+modelli_resNet18/
+__pycache__/
+
+*.mp4
+*.jpg
+*.jpeg
+*.png
+
+*.task
+*.pth
+*.h5
+*.pb
+*.index
+*.data-00000-of-00001
+*.pyc
+
